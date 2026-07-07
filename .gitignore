@@ -1,0 +1,14 @@
+# Godot
+.godot/
+
+# Build artifacts
+demo/addons/diversion/bin/
+*.obj
+*.o
+*.os
+*.pdb
+*.exp
+*.lib
+.sconsign*.dblite
+compile_commands.json
+__pycache__/
