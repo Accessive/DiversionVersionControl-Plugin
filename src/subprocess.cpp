@@ -68,12 +68,19 @@ SubprocessResult subprocess_run(const String &exe, const PackedStringArray &args
 	}
 	SetHandleInformation(pipe_read, HANDLE_FLAG_INHERIT, 0);
 
+	// dv panics ("no console") when the child's stdin handle is invalid, so
+	// hand it NUL rather than INVALID_HANDLE_VALUE.
+	SECURITY_ATTRIBUTES nul_sa = {};
+	nul_sa.nLength = sizeof(nul_sa);
+	nul_sa.bInheritHandle = TRUE;
+	HANDLE nul_in = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &nul_sa, OPEN_EXISTING, 0, nullptr);
+
 	STARTUPINFOW si = {};
 	si.cb = sizeof(si);
 	si.dwFlags = STARTF_USESTDHANDLES;
 	si.hStdOutput = pipe_write;
 	si.hStdError = pipe_write;
-	si.hStdInput = INVALID_HANDLE_VALUE;
+	si.hStdInput = nul_in;
 
 	PROCESS_INFORMATION pi = {};
 	std::wstring wcwd = to_wstring(cwd);
@@ -84,13 +91,16 @@ SubprocessResult subprocess_run(const String &exe, const PackedStringArray &args
 	BOOL ok = CreateProcessW(
 			nullptr, cmdline_buf.data(),
 			nullptr, nullptr,
-			TRUE, // inherit handles (the pipe)
+			TRUE, // inherit handles (the pipe and NUL stdin)
 			CREATE_NO_WINDOW,
 			nullptr,
 			wcwd.empty() ? nullptr : wcwd.c_str(),
 			&si, &pi);
 
 	CloseHandle(pipe_write);
+	if (nul_in != INVALID_HANDLE_VALUE) {
+		CloseHandle(nul_in);
+	}
 
 	if (!ok) {
 		CloseHandle(pipe_read);
