@@ -1,0 +1,94 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows
+            os: windows-latest
+            arch: x86_64
+          - platform: linux
+            os: ubuntu-22.04
+            arch: x86_64
+          - platform: macos
+            os: macos-latest
+            arch: universal
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install SCons
+        run: pip install scons
+
+      - name: Build (editor)
+        run: scons platform=${{ matrix.platform }} arch=${{ matrix.arch }} target=editor
+
+      - name: Upload addon artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: diversion-addon-${{ matrix.platform }}
+          path: |
+            demo/addons/diversion/**
+            !demo/addons/diversion/bin/*.exp
+            !demo/addons/diversion/bin/*.lib
+
+  release:
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Assemble combined addon
+        run: |
+          mkdir -p package/addons/diversion
+          for dir in artifacts/diversion-addon-*/; do
+            cp -r "$dir"/. package/addons/diversion/
+          done
+          cp LICENSE README.md package/addons/diversion/
+          ls -R package
+
+      - name: Zip release asset
+        run: |
+          cd package
+          zip -r "../diversion-plugin-${{ github.ref_name }}.zip" addons
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: diversion-plugin-*.zip
+          generate_release_notes: true
+
+      # The Godot Asset Library serves a zip of the repository at a given
+      # commit, so binaries must exist in git somewhere. This publishes the
+      # assembled addon (with all platform binaries) to a `release` branch
+      # whose root layout is what the editor's asset installer expects.
+      - name: Publish release branch for the Asset Library
+        run: |
+          cd package
+          cp ../README.md ../LICENSE .
+          if [ -f ../icon.png ]; then cp ../icon.png .; fi
+          git init -b release
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Release ${{ github.ref_name }}"
+          git push --force "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" release
