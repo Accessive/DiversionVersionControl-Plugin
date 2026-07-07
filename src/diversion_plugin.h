@@ -3,6 +3,7 @@
 #include "dv_cli.h"
 
 #include <godot_cpp/classes/editor_vcs_interface.hpp>
+#include <godot_cpp/templates/hash_map.hpp>
 #include <godot_cpp/templates/hash_set.hpp>
 #include <godot_cpp/variant/typed_array.hpp>
 
@@ -25,6 +26,10 @@ class DiversionVCSPlugin : public EditorVCSInterface {
 
 	// Cached identifiers from the last `dv status` parse.
 	diversion::DvStatusInfo last_status;
+
+	// commit id -> parent commit id, learned from the last `dv log` parse so
+	// the dock's commit view can be answered with `dv diff --base parent`.
+	HashMap<String, String> commit_parents;
 
 	// Runs `dv status --no-limit`, refreshes `last_status`, and returns
 	// whether the command succeeded.

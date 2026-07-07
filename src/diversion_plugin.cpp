@@ -1,8 +1,10 @@
 #include "diversion_plugin.h"
 
+#include "diff_utils.h"
 #include "dv_cli.h"
 
 #include <godot_cpp/classes/dir_access.hpp>
+#include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
 using namespace godot;
@@ -129,8 +131,12 @@ void DiversionVCSPlugin::_unstage_file(const String &p_file_path) {
 }
 
 void DiversionVCSPlugin::_discard_file(const String &p_file_path) {
-	// Phase 3: dv reset / dv restore.
-	UtilityFunctions::push_warning("[Diversion] Discard is not implemented yet.");
+	// --clean also deletes files that were newly added, matching the dock's
+	// expectation that discarding a new file removes it.
+	SubprocessResult res = DvCli::run(project_path, dv_args({ "reset", dv_path_of(p_file_path), "-f", "--clean" }));
+	if (res.exit_code != 0) {
+		popup_error(String("Could not discard '") + p_file_path + "'.\n\ndv said:\n" + res.output.strip_edges());
+	}
 }
 
 void DiversionVCSPlugin::_commit(const String &p_msg) {
@@ -158,23 +164,119 @@ void DiversionVCSPlugin::_commit(const String &p_msg) {
 }
 
 TypedArray<Dictionary> DiversionVCSPlugin::_get_diff(const String &p_identifier, int32_t p_area) {
-	// Phase 3: dv diff -> unified diff -> diff dictionaries.
-	return TypedArray<Dictionary>();
+	SubprocessResult res;
+	if (p_area == TREE_AREA_COMMIT) {
+		// The dock always lists history (which fills commit_parents) before a
+		// commit can be selected, but refresh once in case that assumption
+		// ever breaks.
+		if (!commit_parents.has(p_identifier)) {
+			_get_previous_commits(100);
+		}
+		if (!commit_parents.has(p_identifier) || commit_parents[p_identifier].is_empty()) {
+			return TypedArray<Dictionary>(); // Root commit or unknown id.
+		}
+		res = DvCli::run(project_path, dv_args({ "diff", "--base", commit_parents[p_identifier], "--compare", p_identifier, "--color", "never" }));
+	} else {
+		// Staged and unstaged both mean "workspace vs base" in Diversion.
+		res = DvCli::run(project_path, dv_args({ "diff", dv_path_of(p_identifier), "--color", "never" }));
+	}
+
+	if (res.exit_code != 0) {
+		UtilityFunctions::push_warning("[Diversion] dv diff failed: ", res.output.strip_edges());
+		return TypedArray<Dictionary>();
+	}
+	return parse_unified_diff(this, res.output);
 }
 
 TypedArray<Dictionary> DiversionVCSPlugin::_get_line_diff(const String &p_file_path, const String &p_text) {
-	// Phase 3: local diff of the editor buffer against the committed base.
-	return TypedArray<Dictionary>();
+	// Diffs the file as saved on disk against the workspace base. Unsaved
+	// buffer edits (p_text) are not considered yet; the gutter catches up on
+	// save. A local text diff against the committed base can lift this later.
+	SubprocessResult res = DvCli::run(project_path, dv_args({ "diff", p_file_path, "--color", "never" }));
+	if (res.exit_code != 0) {
+		return TypedArray<Dictionary>();
+	}
+	return parse_unified_diff_hunks(this, res.output);
 }
 
 TypedArray<Dictionary> DiversionVCSPlugin::_get_previous_commits(int32_t p_max_commits) {
-	// Phase 3: dv log / REST commits endpoint.
-	return TypedArray<Dictionary>();
+	TypedArray<Dictionary> result;
+
+	SubprocessResult res = DvCli::run(project_path, dv_args({ "log", "-n", String::num_int64(p_max_commits), "--date", "iso" }));
+	if (res.exit_code != 0) {
+		UtilityFunctions::push_warning("[Diversion] dv log failed: ", res.output.strip_edges());
+		return result;
+	}
+
+	// Blocks look like:
+	//   commit dv.commit.3 (dv.branch.10)
+	//   Author: Jaydin <jaydin.gulley@outlook.com>
+	//   Date:   2026-07-07T04:44:14Z
+	//
+	//   \tMessage line(s)
+	String id, author, date_iso, msg, prev_id;
+	auto flush = [&]() {
+		if (id.is_empty()) {
+			return;
+		}
+		int64_t unix_time = Time::get_singleton()->get_unix_time_from_datetime_string(date_iso.trim_suffix("Z"));
+		result.push_back(create_commit(msg.strip_edges(), author, id, unix_time, 0));
+		// dv log is newest-first, so the entry after `prev_id` is its parent.
+		if (!prev_id.is_empty()) {
+			commit_parents[prev_id] = id;
+		}
+		commit_parents[id] = String(); // Until a following entry proves otherwise.
+		prev_id = id;
+		id = author = date_iso = msg = String();
+	};
+
+	PackedStringArray lines = res.output.split("\n");
+	for (int i = 0; i < lines.size(); i++) {
+		String line = lines[i];
+		String stripped = line.strip_edges();
+		if (stripped.begins_with("commit ")) {
+			flush();
+			id = stripped.trim_prefix("commit ").get_slice(" ", 0);
+		} else if (stripped.begins_with("Author: ")) {
+			author = stripped.trim_prefix("Author: ");
+		} else if (stripped.begins_with("Date: ")) {
+			date_iso = stripped.trim_prefix("Date: ").strip_edges();
+		} else if ((line.begins_with("\t") || line.begins_with("    ")) && !stripped.is_empty()) {
+			if (!msg.is_empty()) {
+				msg += "\n";
+			}
+			msg += stripped;
+		}
+	}
+	flush();
+
+	return result;
 }
 
 TypedArray<String> DiversionVCSPlugin::_get_branch_list() {
-	// Phase 3: dv branch list / REST list-branches.
-	return TypedArray<String>();
+	TypedArray<String> result;
+
+	SubprocessResult res = DvCli::run(project_path, dv_args({ "branch" }));
+	if (res.exit_code != 0) {
+		UtilityFunctions::push_warning("[Diversion] dv branch failed: ", res.output.strip_edges());
+		return result;
+	}
+
+	// Lines look like: "branch main (dv.branch.1)".
+	PackedStringArray lines = res.output.split("\n");
+	for (int i = 0; i < lines.size(); i++) {
+		String stripped = lines[i].strip_edges();
+		if (!stripped.begins_with("branch ")) {
+			continue;
+		}
+		String rest = stripped.trim_prefix("branch ");
+		int paren = rest.rfind(" (");
+		if (paren > 0) {
+			rest = rest.substr(0, paren);
+		}
+		result.push_back(rest);
+	}
+	return result;
 }
 
 String DiversionVCSPlugin::_get_current_branch_name() {
@@ -189,16 +291,32 @@ String DiversionVCSPlugin::_get_current_branch_name() {
 }
 
 void DiversionVCSPlugin::_create_branch(const String &p_branch_name) {
-	UtilityFunctions::push_warning("[Diversion] Branch creation is not implemented yet.");
+	// --no-checkout: the dock treats create and checkout as separate actions.
+	SubprocessResult res = DvCli::run(project_path, dv_args({ "branch", "-c", p_branch_name, "--no-checkout" }));
+	if (res.exit_code != 0) {
+		popup_error(String("Could not create branch '") + p_branch_name + "'.\n\ndv said:\n" + res.output.strip_edges());
+	}
 }
 
 void DiversionVCSPlugin::_remove_branch(const String &p_branch_name) {
-	UtilityFunctions::push_warning("[Diversion] Branch deletion is not implemented yet.");
+	// -f: dv prompts for confirmation otherwise, and there is no stdin.
+	SubprocessResult res = DvCli::run(project_path, dv_args({ "branch", "-d", p_branch_name, "-f" }));
+	if (res.exit_code != 0) {
+		popup_error(String("Could not delete branch '") + p_branch_name + "'.\n\ndv said:\n" + res.output.strip_edges());
+	}
 }
 
 bool DiversionVCSPlugin::_checkout_branch(const String &p_branch_name) {
-	UtilityFunctions::push_warning("[Diversion] Branch checkout is not implemented yet.");
-	return false;
+	// --take-changes carries uncommitted work to the target branch, matching
+	// how the git plugin's checkout behaves.
+	SubprocessResult res = DvCli::run(project_path, dv_args({ "checkout", p_branch_name, "--take-changes" }));
+	if (res.exit_code != 0) {
+		popup_error(String("Could not check out branch '") + p_branch_name + "'.\n\ndv said:\n" + res.output.strip_edges());
+		return false;
+	}
+	last_status.branch_name = p_branch_name;
+	UtilityFunctions::print("[Diversion] Checked out '", p_branch_name, "': ", res.output.strip_edges());
+	return true;
 }
 
 TypedArray<String> DiversionVCSPlugin::_get_remotes() {
@@ -218,8 +336,12 @@ void DiversionVCSPlugin::_remove_remote(const String &p_remote_name) {
 }
 
 void DiversionVCSPlugin::_pull(const String &p_remote) {
-	// Phase 3: dv update (sync workspace to branch head).
-	UtilityFunctions::push_warning("[Diversion] Update is not implemented yet.");
+	SubprocessResult res = DvCli::run(project_path, dv_args({ "update" }));
+	if (res.exit_code != 0) {
+		popup_error(String("Update failed.\n\ndv said:\n") + res.output.strip_edges());
+		return;
+	}
+	UtilityFunctions::print("[Diversion] Updated workspace: ", res.output.strip_edges());
 }
 
 void DiversionVCSPlugin::_push(const String &p_remote, bool p_force) {
@@ -229,5 +351,7 @@ void DiversionVCSPlugin::_push(const String &p_remote, bool p_force) {
 }
 
 void DiversionVCSPlugin::_fetch(const String &p_remote) {
-	// Phase 3/4: refresh cached status; report if workspace is behind head.
+	// There is no fetch in Diversion; refresh cached state so the dock's
+	// numbers are current.
+	refresh_status();
 }
