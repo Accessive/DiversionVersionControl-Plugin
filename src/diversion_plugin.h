@@ -1,6 +1,9 @@
 #pragma once
 
+#include "dv_cli.h"
+
 #include <godot_cpp/classes/editor_vcs_interface.hpp>
+#include <godot_cpp/templates/hash_set.hpp>
 #include <godot_cpp/variant/typed_array.hpp>
 
 namespace godot {
@@ -15,6 +18,17 @@ class DiversionVCSPlugin : public EditorVCSInterface {
 	GDCLASS(DiversionVCSPlugin, EditorVCSInterface)
 
 	String project_path;
+
+	// Diversion has no staging area; the dock's stage/unstage selections are
+	// tracked here and turned into the explicit file list for `dv commit`.
+	HashSet<String> staged_files;
+
+	// Cached identifiers from the last `dv status` parse.
+	diversion::DvStatusInfo last_status;
+
+	// Runs `dv status --no-limit`, refreshes `last_status`, and returns
+	// whether the command succeeded.
+	bool refresh_status();
 
 protected:
 	static void _bind_methods();
