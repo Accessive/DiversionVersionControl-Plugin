@@ -4,6 +4,8 @@
 #include "dv_cli.h"
 
 #include <godot_cpp/classes/dir_access.hpp>
+#include <godot_cpp/classes/file_access.hpp>
+#include <godot_cpp/classes/os.hpp>
 #include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
@@ -105,6 +107,30 @@ bool DiversionVCSPlugin::refresh_status() {
 	return last_status.valid;
 }
 
+void DiversionVCSPlugin::wait_until_paths_settle(const PackedStringArray &dv_paths) {
+	// ~12 polls x (subprocess + 150ms) caps the wait around 3s; the common
+	// case settles within one or two iterations.
+	for (int attempt = 0; attempt < 12; attempt++) {
+		refresh_status();
+		bool any_present = false;
+		for (const DvStatusEntry &entry : last_status.entries) {
+			for (int i = 0; i < dv_paths.size(); i++) {
+				if (entry.dv_path == dv_paths[i]) {
+					any_present = true;
+					break;
+				}
+			}
+			if (any_present) {
+				break;
+			}
+		}
+		if (!any_present) {
+			return;
+		}
+		OS::get_singleton()->delay_msec(150);
+	}
+}
+
 TypedArray<Dictionary> DiversionVCSPlugin::_get_modified_files_data() {
 	TypedArray<Dictionary> result;
 
@@ -144,6 +170,12 @@ TypedArray<Dictionary> DiversionVCSPlugin::_get_modified_files_data() {
 			if (!old_display.is_empty()) {
 				display = old_display + " -> " + display;
 			}
+		}
+		// The dock discards NEW files by deleting them locally itself (it never
+		// calls the plugin) and re-queries before the sync agent notices the
+		// deletion. A "new" entry with no file on disk is that limbo state.
+		if (entry.change == DvChange::NEW && !FileAccess::file_exists(project_path.path_join(from_dv_path(entry.dv_path)))) {
+			continue;
 		}
 
 		ChangeType change = CHANGE_TYPE_MODIFIED;
@@ -196,12 +228,15 @@ void DiversionVCSPlugin::_unstage_file(const String &p_file_path) {
 void DiversionVCSPlugin::_discard_file(const String &p_file_path) {
 	// --clean also deletes files that were newly added, matching the dock's
 	// expectation that discarding a new file removes it.
-	SubprocessResult res = DvCli::run(project_path, dv_args({ "reset", to_dv_path(dv_path_of(p_file_path)), "-f", "--clean" }));
+	String dv_path = to_dv_path(dv_path_of(p_file_path));
+	SubprocessResult res = DvCli::run(project_path, dv_args({ "reset", dv_path, "-f", "--clean" }));
 	if (res.exit_code != 0) {
 		popup_error(String("Could not discard '") + p_file_path + "'.\n\ndv said:\n" + res.output.strip_edges());
 		return;
 	}
-	refresh_status();
+	PackedStringArray settled;
+	settled.push_back(dv_path);
+	wait_until_paths_settle(settled);
 }
 
 void DiversionVCSPlugin::_commit(const String &p_msg) {
@@ -210,10 +245,13 @@ void DiversionVCSPlugin::_commit(const String &p_msg) {
 		return;
 	}
 
+	PackedStringArray committed_paths;
 	PackedStringArray args;
 	args.push_back("commit");
 	for (const String &path : staged_files) {
-		args.push_back(to_dv_path(dv_path_of(path)));
+		String dv_path = to_dv_path(dv_path_of(path));
+		committed_paths.push_back(dv_path);
+		args.push_back(dv_path);
 	}
 	args.push_back("-m");
 	args.push_back(p_msg);
@@ -226,7 +264,7 @@ void DiversionVCSPlugin::_commit(const String &p_msg) {
 
 	UtilityFunctions::print("[Diversion] Committed ", staged_files.size(), " file(s): ", res.output.strip_edges());
 	staged_files.clear();
-	refresh_status();
+	wait_until_paths_settle(committed_paths);
 }
 
 TypedArray<Dictionary> DiversionVCSPlugin::_get_diff(const String &p_identifier, int32_t p_area) {

@@ -43,6 +43,13 @@ class DiversionVCSPlugin : public EditorVCSInterface {
 	// Blocking status refresh (used right after mutating operations).
 	bool refresh_status();
 
+	// dv commands return before `dv status` reflects them (the sync agent
+	// settles asynchronously), but the dock re-queries the file list
+	// immediately after commit/discard. Polls briefly until none of the given
+	// workspace-relative paths appear in the changelist anymore, so that
+	// re-query sees settled state instead of needing a manual refresh.
+	void wait_until_paths_settle(const PackedStringArray &dv_paths);
+
 	// Converts a dock/editor path (project-relative or res://) into the
 	// workspace-relative path dv expects.
 	String to_dv_path(const String &display_path) const;
