@@ -20,6 +20,25 @@ static String dv_path_of(const String &display_path) {
 	return display_path;
 }
 
+String DiversionVCSPlugin::to_dv_path(const String &display_path) const {
+	String path = display_path.trim_prefix("res://");
+	if (rel_prefix.is_empty()) {
+		return path;
+	}
+	return rel_prefix.path_join(path);
+}
+
+String DiversionVCSPlugin::from_dv_path(const String &dv_path) const {
+	if (rel_prefix.is_empty()) {
+		return dv_path;
+	}
+	String prefix = rel_prefix + String("/");
+	if (dv_path.begins_with(prefix)) {
+		return dv_path.trim_prefix(prefix);
+	}
+	return String();
+}
+
 void DiversionVCSPlugin::_bind_methods() {
 }
 
@@ -38,6 +57,26 @@ bool DiversionVCSPlugin::_initialize(const String &p_project_path) {
 		return false;
 	}
 
+	// Locate the workspace root (marked by a .diversion directory) so paths
+	// can be translated when the project lives in a workspace subfolder.
+	rel_prefix = String();
+	String walk = project_path;
+	while (!walk.is_empty()) {
+		if (DirAccess::dir_exists_absolute(walk.path_join(".diversion"))) {
+			if (walk != project_path) {
+				rel_prefix = project_path.trim_prefix(walk).trim_prefix("/");
+			}
+			break;
+		}
+		String parent = walk.get_base_dir();
+		if (parent == walk) {
+			break;
+		}
+		walk = parent;
+	}
+
+	poller.start(project_path);
+
 	UtilityFunctions::print("[Diversion] Plugin initialized (dv ", version.output.strip_edges(), ") for ", project_path);
 	if (refresh_status()) {
 		UtilityFunctions::print("[Diversion] Repo '", last_status.repo_name, "', branch '", last_status.branch_name, "', ", last_status.entries.size(), " modified path(s).");
@@ -46,6 +85,7 @@ bool DiversionVCSPlugin::_initialize(const String &p_project_path) {
 }
 
 bool DiversionVCSPlugin::_shut_down() {
+	poller.stop();
 	return true;
 }
 
@@ -60,18 +100,29 @@ void DiversionVCSPlugin::_set_credentials(const String &p_username, const String
 }
 
 bool DiversionVCSPlugin::refresh_status() {
-	SubprocessResult res = DvCli::run(project_path, dv_args({ "status", "--no-limit" }));
-	if (res.exit_code != 0) {
-		UtilityFunctions::push_warning("[Diversion] dv status failed: ", res.output.strip_edges());
-		return false;
-	}
-	last_status = parse_dv_status(res.output);
+	poller.poll_now();
+	last_status = poller.get_snapshot();
 	return last_status.valid;
 }
 
 TypedArray<Dictionary> DiversionVCSPlugin::_get_modified_files_data() {
 	TypedArray<Dictionary> result;
-	if (!refresh_status()) {
+
+	// Never block the editor here: serve the background poller's snapshot.
+	last_status = poller.get_snapshot();
+
+	String fail_message;
+	if (poller.is_failing(fail_message)) {
+		if (!reported_status_failure) {
+			reported_status_failure = true;
+			UtilityFunctions::push_warning("[Diversion] dv status is failing (agent stopped, logged out, or offline?). Last error: ", fail_message);
+		}
+	} else if (reported_status_failure) {
+		reported_status_failure = false;
+		UtilityFunctions::print("[Diversion] dv status recovered.");
+	}
+
+	if (!last_status.valid) {
 		return result;
 	}
 
@@ -79,8 +130,20 @@ TypedArray<Dictionary> DiversionVCSPlugin::_get_modified_files_data() {
 	for (const DvStatusEntry &entry : last_status.entries) {
 		// dv lists directories as their own entries; the dock only deals in
 		// files, so skip paths that exist locally as directories.
-		if (DirAccess::dir_exists_absolute(project_path.path_join(entry.dv_path))) {
+		if (DirAccess::dir_exists_absolute(project_path.path_join(from_dv_path(entry.dv_path)))) {
 			continue;
+		}
+		// Skip workspace files outside the project directory.
+		String display = from_dv_path(entry.dv_path);
+		if (display.is_empty()) {
+			continue;
+		}
+		if (entry.change == DvChange::RENAMED) {
+			int arrow = entry.path.find(" -> ");
+			String old_display = from_dv_path(entry.path.substr(0, arrow).strip_edges());
+			if (!old_display.is_empty()) {
+				display = old_display + " -> " + display;
+			}
 		}
 
 		ChangeType change = CHANGE_TYPE_MODIFIED;
@@ -102,9 +165,9 @@ TypedArray<Dictionary> DiversionVCSPlugin::_get_modified_files_data() {
 				break;
 		}
 
-		still_modified.insert(entry.path);
-		TreeArea area = staged_files.has(entry.path) ? TREE_AREA_STAGED : TREE_AREA_UNSTAGED;
-		result.push_back(create_status_file(entry.path, change, area));
+		still_modified.insert(display);
+		TreeArea area = staged_files.has(display) ? TREE_AREA_STAGED : TREE_AREA_UNSTAGED;
+		result.push_back(create_status_file(display, change, area));
 	}
 
 	// Drop staged entries that are no longer modified (committed or reverted
@@ -133,10 +196,12 @@ void DiversionVCSPlugin::_unstage_file(const String &p_file_path) {
 void DiversionVCSPlugin::_discard_file(const String &p_file_path) {
 	// --clean also deletes files that were newly added, matching the dock's
 	// expectation that discarding a new file removes it.
-	SubprocessResult res = DvCli::run(project_path, dv_args({ "reset", dv_path_of(p_file_path), "-f", "--clean" }));
+	SubprocessResult res = DvCli::run(project_path, dv_args({ "reset", to_dv_path(dv_path_of(p_file_path)), "-f", "--clean" }));
 	if (res.exit_code != 0) {
 		popup_error(String("Could not discard '") + p_file_path + "'.\n\ndv said:\n" + res.output.strip_edges());
+		return;
 	}
+	refresh_status();
 }
 
 void DiversionVCSPlugin::_commit(const String &p_msg) {
@@ -148,7 +213,7 @@ void DiversionVCSPlugin::_commit(const String &p_msg) {
 	PackedStringArray args;
 	args.push_back("commit");
 	for (const String &path : staged_files) {
-		args.push_back(dv_path_of(path));
+		args.push_back(to_dv_path(dv_path_of(path)));
 	}
 	args.push_back("-m");
 	args.push_back(p_msg);
@@ -161,6 +226,7 @@ void DiversionVCSPlugin::_commit(const String &p_msg) {
 
 	UtilityFunctions::print("[Diversion] Committed ", staged_files.size(), " file(s): ", res.output.strip_edges());
 	staged_files.clear();
+	refresh_status();
 }
 
 TypedArray<Dictionary> DiversionVCSPlugin::_get_diff(const String &p_identifier, int32_t p_area) {
@@ -178,7 +244,7 @@ TypedArray<Dictionary> DiversionVCSPlugin::_get_diff(const String &p_identifier,
 		res = DvCli::run(project_path, dv_args({ "diff", "--base", commit_parents[p_identifier], "--compare", p_identifier, "--color", "never" }));
 	} else {
 		// Staged and unstaged both mean "workspace vs base" in Diversion.
-		res = DvCli::run(project_path, dv_args({ "diff", dv_path_of(p_identifier), "--color", "never" }));
+		res = DvCli::run(project_path, dv_args({ "diff", to_dv_path(dv_path_of(p_identifier)), "--color", "never" }));
 	}
 
 	if (res.exit_code != 0) {
@@ -192,7 +258,7 @@ TypedArray<Dictionary> DiversionVCSPlugin::_get_line_diff(const String &p_file_p
 	// Diffs the file as saved on disk against the workspace base. Unsaved
 	// buffer edits (p_text) are not considered yet; the gutter catches up on
 	// save. A local text diff against the committed base can lift this later.
-	SubprocessResult res = DvCli::run(project_path, dv_args({ "diff", p_file_path, "--color", "never" }));
+	SubprocessResult res = DvCli::run(project_path, dv_args({ "diff", to_dv_path(p_file_path), "--color", "never" }));
 	if (res.exit_code != 0) {
 		return TypedArray<Dictionary>();
 	}
@@ -314,8 +380,8 @@ bool DiversionVCSPlugin::_checkout_branch(const String &p_branch_name) {
 		popup_error(String("Could not check out branch '") + p_branch_name + "'.\n\ndv said:\n" + res.output.strip_edges());
 		return false;
 	}
-	last_status.branch_name = p_branch_name;
 	UtilityFunctions::print("[Diversion] Checked out '", p_branch_name, "': ", res.output.strip_edges());
+	refresh_status();
 	return true;
 }
 
@@ -342,6 +408,7 @@ void DiversionVCSPlugin::_pull(const String &p_remote) {
 		return;
 	}
 	UtilityFunctions::print("[Diversion] Updated workspace: ", res.output.strip_edges());
+	refresh_status();
 }
 
 void DiversionVCSPlugin::_push(const String &p_remote, bool p_force) {

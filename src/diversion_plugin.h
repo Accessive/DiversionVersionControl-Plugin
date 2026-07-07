@@ -1,6 +1,7 @@
 #pragma once
 
 #include "dv_cli.h"
+#include "status_poller.h"
 
 #include <godot_cpp/classes/editor_vcs_interface.hpp>
 #include <godot_cpp/templates/hash_map.hpp>
@@ -20,6 +21,11 @@ class DiversionVCSPlugin : public EditorVCSInterface {
 
 	String project_path;
 
+	// Prefix of the project dir relative to the Diversion workspace root
+	// (empty when they coincide). dv reports workspace-relative paths; the
+	// dock wants project-relative ones.
+	String rel_prefix;
+
 	// Diversion has no staging area; the dock's stage/unstage selections are
 	// tracked here and turned into the explicit file list for `dv commit`.
 	HashSet<String> staged_files;
@@ -31,9 +37,19 @@ class DiversionVCSPlugin : public EditorVCSInterface {
 	// the dock's commit view can be answered with `dv diff --base parent`.
 	HashMap<String, String> commit_parents;
 
-	// Runs `dv status --no-limit`, refreshes `last_status`, and returns
-	// whether the command succeeded.
+	diversion::StatusPoller poller;
+	bool reported_status_failure = false;
+
+	// Blocking status refresh (used right after mutating operations).
 	bool refresh_status();
+
+	// Converts a dock/editor path (project-relative or res://) into the
+	// workspace-relative path dv expects.
+	String to_dv_path(const String &display_path) const;
+
+	// Converts a workspace-relative dv path into a project-relative one;
+	// returns empty for paths outside the project directory.
+	String from_dv_path(const String &dv_path) const;
 
 protected:
 	static void _bind_methods();
