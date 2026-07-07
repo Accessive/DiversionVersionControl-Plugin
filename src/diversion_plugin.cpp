@@ -412,13 +412,17 @@ void DiversionVCSPlugin::_remove_branch(const String &p_branch_name) {
 
 bool DiversionVCSPlugin::_checkout_branch(const String &p_branch_name) {
 	// --take-changes carries uncommitted work to the target branch, matching
-	// how the git plugin's checkout behaves.
-	SubprocessResult res = DvCli::run(project_path, dv_args({ "checkout", p_branch_name, "--take-changes" }));
+	// how the git plugin's checkout behaves. --ignore-shelf avoids an
+	// interactive prompt (there is no stdin). --nowait is essential: checkout
+	// otherwise blocks until the full file sync completes, freezing the editor
+	// for the duration — or forever, since syncing can stall on files the
+	// running editor itself holds locked (e.g. this plugin's own DLL).
+	SubprocessResult res = DvCli::run(project_path, dv_args({ "checkout", p_branch_name, "--take-changes", "--ignore-shelf", "--nowait" }));
 	if (res.exit_code != 0) {
 		popup_error(String("Could not check out branch '") + p_branch_name + "'.\n\ndv said:\n" + res.output.strip_edges());
 		return false;
 	}
-	UtilityFunctions::print("[Diversion] Checked out '", p_branch_name, "': ", res.output.strip_edges());
+	UtilityFunctions::print("[Diversion] Checked out '", p_branch_name, "'; files are syncing in the background. ", res.output.strip_edges());
 	refresh_status();
 	return true;
 }
