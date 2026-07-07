@@ -1,0 +1,46 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows
+            os: windows-latest
+            arch: x86_64
+          - platform: linux
+            os: ubuntu-22.04
+            arch: x86_64
+          - platform: macos
+            os: macos-latest
+            arch: universal
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install SCons
+        run: pip install scons
+
+      - name: Build (editor)
+        run: scons platform=${{ matrix.platform }} arch=${{ matrix.arch }} target=editor
+
+      - name: Upload addon artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: diversion-addon-${{ matrix.platform }}
+          path: |
+            demo/addons/diversion/**
+            !demo/addons/diversion/bin/*.exp
+            !demo/addons/diversion/bin/*.lib
