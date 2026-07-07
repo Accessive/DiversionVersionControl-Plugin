@@ -418,7 +418,15 @@ bool DiversionVCSPlugin::_checkout_branch(const String &p_branch_name) {
 	// for the duration — or forever, since syncing can stall on files the
 	// running editor itself holds locked (e.g. this plugin's own DLL).
 	SubprocessResult res = DvCli::run(project_path, dv_args({ "checkout", p_branch_name, "--take-changes", "--ignore-shelf", "--nowait" }));
-	if (res.exit_code != 0) {
+	bool switched = res.exit_code == 0;
+	if (!switched) {
+		// With --nowait, dv can exit non-zero while the background sync is
+		// still in progress even though the branch switch itself succeeded.
+		// The resulting branch is the truth, not the exit code.
+		SubprocessResult name = DvCli::run(project_path, dv_args({ "branch-name" }));
+		switched = name.exit_code == 0 && name.output.strip_edges() == p_branch_name;
+	}
+	if (!switched) {
 		popup_error(String("Could not check out branch '") + p_branch_name + "'.\n\ndv said:\n" + res.output.strip_edges());
 		return false;
 	}
