@@ -1,7 +1,9 @@
 #include "register_types.h"
 
 #include "diversion_plugin.h"
+#include "softlock_plugin.h"
 
+#include <godot_cpp/classes/editor_plugin_registration.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/godot.hpp>
 
@@ -12,12 +14,15 @@ void initialize_diversion_module(ModuleInitializationLevel p_level) {
 		return;
 	}
 	GDREGISTER_CLASS(DiversionVCSPlugin);
+	GDREGISTER_INTERNAL_CLASS(DiversionSoftLockPlugin);
+	EditorPlugins::add_by_type<DiversionSoftLockPlugin>();
 }
 
 void uninitialize_diversion_module(ModuleInitializationLevel p_level) {
 	if (p_level != MODULE_INITIALIZATION_LEVEL_EDITOR) {
 		return;
 	}
+	EditorPlugins::remove_by_type<DiversionSoftLockPlugin>();
 }
 
 extern "C" {
