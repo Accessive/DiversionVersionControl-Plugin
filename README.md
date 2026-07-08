@@ -14,6 +14,11 @@ implemented as a GDExtension that plugs into Godot's built-in Version Control UI
 - Commit history with per-commit diffs, file diffs, and script-editor change gutter
 - Discard file changes (`dv reset --clean`), Pull = `dv update`
 - Friendly errors when dv is missing, logged out, or the project isn't a workspace
+- **Soft-lock alerts** (a separate "Diversion Locks" bottom panel): shows files
+  being edited in other teammates' workspaces/branches and warns you when you open
+  a scene someone else is already editing — Diversion's conflict-prevention, the
+  same data the official Unreal plugin uses. Zero-config: it reads your `dv login`
+  session, so no API token setup is needed.
 
 ## How Diversion concepts map to Godot's VCS UI
 
@@ -51,6 +56,14 @@ scons platform=windows target=editor   # or platform=linux / platform=macos
 The library is emitted into `demo/addons/diversion/bin/`. CI builds all three
 platforms on every push (see `.github/workflows/build.yml`).
 
+## Soft-lock alerts
+
+The "Diversion Locks" panel and scene-open warnings need no token setup — they use
+your existing `dv login`. Soft locks are a Diversion free-tier feature; you and
+your teammates just need to be logged in and collaborating on the same repo. (Hard
+locks — enforced, exclusive write access — are a Studio/Enterprise feature and are
+not covered here.)
+
 ## Known limitations
 
 - The script-editor change gutter updates on save (unsaved buffer edits are not
@@ -58,6 +71,8 @@ platforms on every push (see `.github/workflows/build.yml`).
 - Commit amend is not supported (Diversion has no amend).
 - Merge-conflict resolution happens in the Diversion desktop/web app, not inside
   Godot.
+- Soft-lock alerts poll roughly every 30 seconds, so they are near-real-time, not
+  instant.
 
 ## License
 
