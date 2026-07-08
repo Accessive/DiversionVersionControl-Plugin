@@ -51,6 +51,8 @@ class DiversionSoftLockPlugin : public EditorPlugin {
 
 	void refresh_ui();
 	void on_scene_changed(Node *scene_root);
+	String change_label(const diversion::OtherEdit &e) const;
+	String relative_time(int64_t mtime) const;
 
 	// workspace-relative dv path -> res:// for matching scene paths
 	String from_dv_to_project(const String &dv_path) const;

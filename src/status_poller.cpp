@@ -6,7 +6,9 @@ using namespace godot;
 
 namespace diversion {
 
-static const std::chrono::milliseconds POLL_INTERVAL(2500);
+// Kept short so the Commit dock reflects saves/agent changes promptly. The
+// poll runs on a background thread, so a tight interval doesn't stall the UI.
+static const std::chrono::milliseconds POLL_INTERVAL(1000);
 
 StatusPoller::~StatusPoller() {
 	stop();

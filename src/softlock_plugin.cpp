@@ -10,6 +10,7 @@
 #include <godot_cpp/classes/label.hpp>
 #include <godot_cpp/classes/node.hpp>
 #include <godot_cpp/classes/project_settings.hpp>
+#include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/classes/tree.hpp>
 #include <godot_cpp/classes/tree_item.hpp>
 #include <godot_cpp/core/class_db.hpp>
@@ -60,11 +61,17 @@ void DiversionSoftLockPlugin::_enter_tree() {
 
 	tree = memnew(Tree);
 	tree->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	tree->set_columns(3);
+	tree->set_columns(5);
 	tree->set_column_titles_visible(true);
 	tree->set_column_title(0, "File");
 	tree->set_column_title(1, "Edited by");
 	tree->set_column_title(2, "Branch");
+	tree->set_column_title(3, "Status");
+	tree->set_column_title(4, "Last touched");
+	tree->set_column_expand(3, false);
+	tree->set_column_expand(4, false);
+	tree->set_column_custom_minimum_width(3, 90);
+	tree->set_column_custom_minimum_width(4, 110);
 	panel->add_child(tree);
 
 	warn_dialog = memnew(AcceptDialog);
@@ -140,6 +147,7 @@ void DiversionSoftLockPlugin::refresh_ui() {
 
 	tree->clear();
 	TreeItem *root = tree->create_item();
+	Color warn(1.0, 0.75, 0.3);
 	for (int i = 0; i < snapshot.size(); i++) {
 		const OtherEdit &e = snapshot[i];
 		String display = from_dv_to_project(e.path);
@@ -150,7 +158,52 @@ void DiversionSoftLockPlugin::refresh_ui() {
 		item->set_text(0, display);
 		item->set_text(1, e.author);
 		item->set_text(2, e.branch_name);
+		item->set_text(3, change_label(e));
+		item->set_text(4, relative_time(e.mtime));
+		// Actively-edited files (uncommitted in someone's live workspace) are
+		// the real collision risk; make them stand out.
+		if (!e.workspace_id.is_empty()) {
+			item->set_custom_color(1, warn);
+			item->set_custom_color(3, warn);
+		}
 	}
+}
+
+String DiversionSoftLockPlugin::change_label(const OtherEdit &e) const {
+	// An empty workspace id means the change was already committed on another
+	// branch rather than being edited live right now.
+	if (e.workspace_id.is_empty()) {
+		return "committed";
+	}
+	switch (e.status) {
+		case 2:
+			return "adding";
+		case 4:
+			return "deleting";
+		default:
+			return "editing";
+	}
+}
+
+String DiversionSoftLockPlugin::relative_time(int64_t mtime) const {
+	if (mtime <= 0) {
+		return "-";
+	}
+	int64_t now = (int64_t)Time::get_singleton()->get_unix_time_from_system();
+	int64_t d = now - mtime;
+	if (d < 0) {
+		d = 0;
+	}
+	if (d < 60) {
+		return "just now";
+	}
+	if (d < 3600) {
+		return itos(d / 60) + "m ago";
+	}
+	if (d < 86400) {
+		return itos(d / 3600) + "h ago";
+	}
+	return itos(d / 86400) + "d ago";
 }
 
 void DiversionSoftLockPlugin::on_scene_changed(Node *scene_root) {

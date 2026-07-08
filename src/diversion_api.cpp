@@ -255,10 +255,11 @@ bool DiversionApi::fetch_other_statuses(const String &repo_id, const String &wor
 			edit.status = (int)fs.get("status", 0);
 			edit.branch_name = fs.get("branch_name", fs.get("branch_id", ""));
 			edit.workspace_id = fs.get("workspace_id", "");
+			edit.mtime = (int64_t)fs.get("mtime", -1);
 			Variant author = fs.get("author", Variant());
 			if (author.get_type() == Variant::DICTIONARY) {
 				Dictionary a = author;
-				edit.author = a.get("name", a.get("email", "someone"));
+				edit.author = a.get("full_name", a.get("name", a.get("email", "someone")));
 			} else {
 				edit.author = author;
 			}

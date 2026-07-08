@@ -29,6 +29,9 @@ class DiversionVCSPlugin : public EditorVCSInterface {
 	// Diversion has no staging area; the dock's stage/unstage selections are
 	// tracked here and turned into the explicit file list for `dv commit`.
 	HashSet<String> staged_files;
+	// Consecutive status queries in which a staged file was absent; used to
+	// avoid unstaging on a single transient mid-sync snapshot.
+	HashMap<String, int> staged_miss;
 
 	// Cached identifiers from the last `dv status` parse.
 	diversion::DvStatusInfo last_status;

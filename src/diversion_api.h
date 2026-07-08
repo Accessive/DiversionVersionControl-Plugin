@@ -10,8 +10,9 @@ struct OtherEdit {
 	godot::String path; // workspace-relative
 	godot::String author; // display name / email
 	godot::String branch_name;
-	godot::String workspace_id;
+	godot::String workspace_id; // empty => the change was already committed
 	int status = 0; // 1=INTACT 2=ADDED 3=MODIFIED 4=DELETED
+	int64_t mtime = -1; // unix seconds of the other edit, -1 if unknown
 };
 
 // Talks to the Diversion cloud REST API. Handles the AWS Cognito

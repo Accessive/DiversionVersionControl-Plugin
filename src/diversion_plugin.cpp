@@ -202,16 +202,27 @@ TypedArray<Dictionary> DiversionVCSPlugin::_get_modified_files_data() {
 		result.push_back(create_status_file(display, change, area));
 	}
 
-	// Drop staged entries that are no longer modified (committed or reverted
-	// behind our back).
+	// Drop staged entries that are genuinely gone (committed or reverted behind
+	// our back). A single `dv status --nowait` taken mid-sync can transiently
+	// omit a file that is still modified, so require it to be missing from two
+	// consecutive queries before unstaging it -- otherwise a save (which
+	// triggers a dock refresh while the agent is still scanning) would wrongly
+	// bounce a file out of the staged area.
 	Vector<String> stale;
 	for (const String &path : staged_files) {
-		if (!still_modified.has(path)) {
-			stale.push_back(path);
+		if (still_modified.has(path)) {
+			staged_miss[path] = 0;
+		} else {
+			int misses = staged_miss.has(path) ? staged_miss[path] + 1 : 1;
+			staged_miss[path] = misses;
+			if (misses >= 2) {
+				stale.push_back(path);
+			}
 		}
 	}
 	for (const String &path : stale) {
 		staged_files.erase(path);
+		staged_miss.erase(path);
 	}
 
 	return result;
@@ -223,6 +234,7 @@ void DiversionVCSPlugin::_stage_file(const String &p_file_path) {
 
 void DiversionVCSPlugin::_unstage_file(const String &p_file_path) {
 	staged_files.erase(p_file_path);
+	staged_miss.erase(p_file_path);
 }
 
 void DiversionVCSPlugin::_discard_file(const String &p_file_path) {
