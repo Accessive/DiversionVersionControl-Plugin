@@ -5,6 +5,8 @@
 #include <godot_cpp/classes/accept_dialog.hpp>
 #include <godot_cpp/classes/control.hpp>
 #include <godot_cpp/classes/dir_access.hpp>
+#include <godot_cpp/classes/editor_file_system.hpp>
+#include <godot_cpp/classes/editor_interface.hpp>
 #include <godot_cpp/classes/label.hpp>
 #include <godot_cpp/classes/node.hpp>
 #include <godot_cpp/classes/project_settings.hpp>
@@ -97,6 +99,21 @@ void DiversionSoftLockPlugin::_exit_tree() {
 }
 
 void DiversionSoftLockPlugin::_process(double delta) {
+	// Godot's Version Control dock only re-reads the file list on the editor's
+	// filesystem_changed signal (there is no timer). Changes the Diversion sync
+	// agent writes -- e.g. a teammate's pulled edits -- don't always trigger a
+	// rescan, leaving the Commit dock stale until a manual refresh. A periodic
+	// light source scan makes the editor notice them and refreshes the dock
+	// (and imports synced assets) on its own.
+	scan_accum += delta;
+	if (scan_accum >= 5.0) {
+		scan_accum = 0.0;
+		EditorFileSystem *efs = EditorInterface::get_singleton()->get_resource_filesystem();
+		if (efs && !efs->is_scanning()) {
+			efs->scan_sources();
+		}
+	}
+
 	poll_accum += delta;
 	if (poll_accum < 1.0) {
 		return;

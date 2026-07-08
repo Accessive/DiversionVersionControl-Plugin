@@ -33,6 +33,7 @@ class DiversionSoftLockPlugin : public EditorPlugin {
 	AcceptDialog *warn_dialog = nullptr;
 
 	double poll_accum = 0.0;
+	double scan_accum = 0.0;
 	String warned_for_scene; // avoid repeating the warning for the same scene
 
 	// --- Shared state (guarded by mutex) ---
