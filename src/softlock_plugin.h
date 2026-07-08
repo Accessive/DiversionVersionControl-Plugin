@@ -13,17 +13,16 @@ namespace godot {
 
 class Tree;
 class Label;
-class Button;
 class AcceptDialog;
-class LineEdit;
 
 // Companion editor plugin (separate from the VCS integration) that surfaces
 // Diversion's free-tier soft locks: it polls the other_statuses API for files
 // being edited in other workspaces/branches and warns before you collide.
 //
-// Lives in its own bottom panel and pops a dialog when you open a scene that
-// someone else is already editing. Dormant (with a hint) until an API token is
-// set in Editor Settings under "diversion/api_token".
+// Authentication is zero-config: it reads the refresh token that `dv login`
+// stored locally (the same source the official Unreal plugin uses), so the
+// user only needs to be logged in via Diversion. Lives in its own bottom
+// panel and pops a dialog when you open a scene someone else is editing.
 class DiversionSoftLockPlugin : public EditorPlugin {
 	GDCLASS(DiversionSoftLockPlugin, EditorPlugin)
 
@@ -31,9 +30,6 @@ class DiversionSoftLockPlugin : public EditorPlugin {
 	VBoxContainer *panel = nullptr;
 	Label *status_label = nullptr;
 	Tree *tree = nullptr;
-	Button *token_button = nullptr;
-	AcceptDialog *token_dialog = nullptr;
-	LineEdit *token_field = nullptr;
 	AcceptDialog *warn_dialog = nullptr;
 
 	double poll_accum = 0.0;
@@ -44,9 +40,6 @@ class DiversionSoftLockPlugin : public EditorPlugin {
 	std::mutex mutex;
 	std::condition_variable cv;
 	bool exit_requested = false;
-	bool refresh_requested = false;
-	String pending_token; // main thread -> worker
-	bool token_dirty = false;
 
 	Vector<diversion::OtherEdit> edits; // worker -> main
 	String status_message;
@@ -55,11 +48,7 @@ class DiversionSoftLockPlugin : public EditorPlugin {
 	void thread_loop();
 	void poll_once(diversion::DiversionApi &api, String &project_path, String &repo_id, String &workspace_id);
 
-	String read_token_setting();
-	void apply_token(const String &token);
 	void refresh_ui();
-	void on_token_button();
-	void on_token_confirmed();
 	void on_scene_changed(Node *scene_root);
 
 	// workspace-relative dv path -> res:// for matching scene paths

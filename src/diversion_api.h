@@ -23,14 +23,21 @@ struct OtherEdit {
 // calls are blocking and meant to run on a background thread.
 class DiversionApi {
 public:
-	// The API token (Cognito refresh token) from the web app. Setting a
+	// Sets the Cognito refresh token used to mint access tokens. Setting a
 	// different token invalidates any cached access token.
 	void set_refresh_token(const godot::String &p_token);
 	bool has_token() const { return !refresh_token.is_empty(); }
 
-	// Cognito user-pool region and app client id. Defaults match Diversion's
-	// production pool but stay configurable since it is uncontracted.
-	void set_region(const godot::String &p_region) { region = p_region; }
+	// Loads the refresh token from the local Diversion credentials that
+	// `dv login` writes (~/.diversion/credentials/<user>), the same source the
+	// official Unreal plugin reads. Returns true if a token was found. This is
+	// the zero-config path: the user only needs to be logged in via dv.
+	bool load_local_credentials(godot::String &r_error);
+
+	// OAuth token endpoint and app client id. Defaults match Diversion's
+	// production login client (from the official plugin) but stay configurable
+	// since the flow is uncontracted.
+	void set_oauth_url(const godot::String &p_url) { oauth_url = p_url; }
 	void set_client_id(const godot::String &p_client_id) { client_id = p_client_id; }
 
 	// Fetches other workspaces'/branches' edits for the given repo+workspace.
@@ -45,8 +52,11 @@ private:
 	godot::String access_token;
 	int64_t access_expiry_unix = 0;
 
-	godot::String region = "us-east-2";
-	godot::String client_id = "j084768v4hd6j1pf8df4h4c47";
+	// Branded Cognito Hosted-UI token endpoint + the login client id the
+	// official Diversion plugins use. More stable than the raw regional
+	// cognito-idp endpoint (no hardcoded region).
+	godot::String oauth_url = "https://auth.diversion.dev/oauth2/token";
+	godot::String client_id = "nmm65ta2r48pvj1lsjcmoeb7l";
 
 	// Ensures a non-expired access token, exchanging the refresh token if
 	// needed. Returns false on failure; sets r_auth_invalid when the refresh

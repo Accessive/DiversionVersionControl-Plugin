@@ -3,16 +3,10 @@
 #include "dv_cli.h"
 
 #include <godot_cpp/classes/accept_dialog.hpp>
-#include <godot_cpp/classes/button.hpp>
+#include <godot_cpp/classes/control.hpp>
 #include <godot_cpp/classes/dir_access.hpp>
-#include <godot_cpp/classes/editor_interface.hpp>
-#include <godot_cpp/classes/editor_settings.hpp>
-#include <godot_cpp/classes/file_access.hpp>
-#include <godot_cpp/classes/h_box_container.hpp>
 #include <godot_cpp/classes/label.hpp>
-#include <godot_cpp/classes/line_edit.hpp>
 #include <godot_cpp/classes/node.hpp>
-#include <godot_cpp/classes/os.hpp>
 #include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/classes/tree.hpp>
 #include <godot_cpp/classes/tree_item.hpp>
@@ -24,12 +18,9 @@
 using namespace godot;
 using namespace diversion;
 
-static const char *TOKEN_SETTING = "diversion/api_token";
 static const std::chrono::seconds POLL_INTERVAL(30);
 
 void DiversionSoftLockPlugin::_bind_methods() {
-	ClassDB::bind_method(D_METHOD("on_token_button"), &DiversionSoftLockPlugin::on_token_button);
-	ClassDB::bind_method(D_METHOD("on_token_confirmed"), &DiversionSoftLockPlugin::on_token_confirmed);
 	ClassDB::bind_method(D_METHOD("on_scene_changed", "scene_root"), &DiversionSoftLockPlugin::on_scene_changed);
 }
 
@@ -57,26 +48,13 @@ void DiversionSoftLockPlugin::_enter_tree() {
 		walk = parent;
 	}
 
-	// Register the token setting if absent.
-	Ref<EditorSettings> es = EditorInterface::get_singleton()->get_editor_settings();
-	if (es.is_valid() && !es->has_setting(TOKEN_SETTING)) {
-		es->set_setting(TOKEN_SETTING, "");
-	}
-
 	// --- Build the bottom panel UI ---
 	panel = memnew(VBoxContainer);
 	panel->set_custom_minimum_size(Vector2(0, 150));
 
-	HBoxContainer *header = memnew(HBoxContainer);
 	status_label = memnew(Label);
 	status_label->set_text("Diversion locks: starting...");
-	status_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	header->add_child(status_label);
-	token_button = memnew(Button);
-	token_button->set_text("Set API Token");
-	token_button->connect("pressed", callable_mp(this, &DiversionSoftLockPlugin::on_token_button));
-	header->add_child(token_button);
-	panel->add_child(header);
+	panel->add_child(status_label);
 
 	tree = memnew(Tree);
 	tree->set_v_size_flags(Control::SIZE_EXPAND_FILL);
@@ -87,16 +65,6 @@ void DiversionSoftLockPlugin::_enter_tree() {
 	tree->set_column_title(2, "Branch");
 	panel->add_child(tree);
 
-	token_dialog = memnew(AcceptDialog);
-	token_dialog->set_title("Diversion API Token");
-	token_field = memnew(LineEdit);
-	token_field->set_placeholder("Paste your Diversion API token");
-	token_field->set_secret(true);
-	token_field->set_custom_minimum_size(Vector2(400, 0));
-	token_dialog->add_child(token_field);
-	token_dialog->connect("confirmed", callable_mp(this, &DiversionSoftLockPlugin::on_token_confirmed));
-	panel->add_child(token_dialog);
-
 	warn_dialog = memnew(AcceptDialog);
 	warn_dialog->set_title("Diversion: File in use");
 	panel->add_child(warn_dialog);
@@ -105,12 +73,9 @@ void DiversionSoftLockPlugin::_enter_tree() {
 
 	connect("scene_changed", callable_mp(this, &DiversionSoftLockPlugin::on_scene_changed));
 
-	// Start the background poller.
 	{
 		std::lock_guard<std::mutex> lock(mutex);
 		exit_requested = false;
-		pending_token = read_token_setting();
-		token_dirty = true;
 	}
 	worker = std::thread(&DiversionSoftLockPlugin::thread_loop, this);
 }
@@ -131,41 +96,12 @@ void DiversionSoftLockPlugin::_exit_tree() {
 	}
 }
 
-String DiversionSoftLockPlugin::read_token_setting() {
-	Ref<EditorSettings> es = EditorInterface::get_singleton()->get_editor_settings();
-	String token;
-	if (es.is_valid() && es->has_setting(TOKEN_SETTING)) {
-		token = es->get_setting(TOKEN_SETTING);
-	}
-	// DEV fallback so the feature can be exercised before a token is entered
-	// in Editor Settings. Harmless (reads the user's own dv token) but slated
-	// for removal before release.
-	if (token.is_empty()) {
-		String tokfile = OS::get_singleton()->get_environment("USERPROFILE").path_join(".diversion").path_join("api_token.txt");
-		if (FileAccess::file_exists(tokfile)) {
-			token = FileAccess::get_file_as_string(tokfile).strip_edges();
-		}
-	}
-	return token;
-}
-
 void DiversionSoftLockPlugin::_process(double delta) {
 	poll_accum += delta;
 	if (poll_accum < 1.0) {
 		return;
 	}
 	poll_accum = 0.0;
-
-	// Pick up a token change made in Editor Settings.
-	String current = read_token_setting();
-	{
-		std::lock_guard<std::mutex> lock(mutex);
-		if (current != pending_token) {
-			pending_token = current;
-			token_dirty = true;
-			cv.notify_all();
-		}
-	}
 	refresh_ui();
 }
 
@@ -189,28 +125,15 @@ void DiversionSoftLockPlugin::refresh_ui() {
 	TreeItem *root = tree->create_item();
 	for (int i = 0; i < snapshot.size(); i++) {
 		const OtherEdit &e = snapshot[i];
+		String display = from_dv_to_project(e.path);
+		if (display.is_empty()) {
+			continue; // outside this project
+		}
 		TreeItem *item = tree->create_item(root);
-		item->set_text(0, from_dv_to_project(e.path));
+		item->set_text(0, display);
 		item->set_text(1, e.author);
 		item->set_text(2, e.branch_name);
 	}
-}
-
-void DiversionSoftLockPlugin::on_token_button() {
-	token_field->set_text(read_token_setting());
-	token_dialog->popup_centered();
-}
-
-void DiversionSoftLockPlugin::on_token_confirmed() {
-	String token = token_field->get_text().strip_edges();
-	Ref<EditorSettings> es = EditorInterface::get_singleton()->get_editor_settings();
-	if (es.is_valid()) {
-		es->set_setting(TOKEN_SETTING, token);
-	}
-	std::lock_guard<std::mutex> lock(mutex);
-	pending_token = token;
-	token_dirty = true;
-	cv.notify_all();
 }
 
 void DiversionSoftLockPlugin::on_scene_changed(Node *scene_root) {
@@ -256,29 +179,17 @@ void DiversionSoftLockPlugin::thread_loop() {
 	String repo_id, workspace_id;
 
 	while (true) {
-		bool apply_tok = false;
-		String tok;
 		{
 			std::unique_lock<std::mutex> lock(mutex);
 			if (exit_requested) {
 				return;
 			}
-			if (token_dirty) {
-				tok = pending_token;
-				token_dirty = false;
-				apply_tok = true;
-			}
-		}
-		if (apply_tok) {
-			api.set_refresh_token(tok);
-			repo_id = String();
-			workspace_id = String();
 		}
 
 		poll_once(api, project_path, repo_id, workspace_id);
 
 		std::unique_lock<std::mutex> lock(mutex);
-		cv.wait_for(lock, POLL_INTERVAL, [this] { return exit_requested || token_dirty; });
+		cv.wait_for(lock, POLL_INTERVAL, [this] { return exit_requested; });
 		if (exit_requested) {
 			return;
 		}
@@ -287,11 +198,14 @@ void DiversionSoftLockPlugin::thread_loop() {
 
 void DiversionSoftLockPlugin::poll_once(DiversionApi &api, String &project_path, String &repo_id, String &workspace_id) {
 	if (!api.has_token()) {
-		std::lock_guard<std::mutex> lock(mutex);
-		status_message = "Diversion locks: no API token set. Click 'Set API Token' (from the Diversion web app: Avatar -> Integrations).";
-		edits.clear();
-		have_data = true;
-		return;
+		String cred_err;
+		if (!api.load_local_credentials(cred_err)) {
+			std::lock_guard<std::mutex> lock(mutex);
+			status_message = String("Diversion locks: ") + cred_err;
+			edits.clear();
+			have_data = true;
+			return;
+		}
 	}
 
 	// Resolve repo/workspace ids once via dv status.

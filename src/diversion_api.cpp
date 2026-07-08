@@ -1,5 +1,7 @@
 #include "diversion_api.h"
 
+#include <godot_cpp/classes/dir_access.hpp>
+#include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/classes/http_client.hpp>
 #include <godot_cpp/classes/json.hpp>
 #include <godot_cpp/classes/os.hpp>
@@ -99,21 +101,14 @@ void DiversionApi::set_refresh_token(const String &p_token) {
 }
 
 bool DiversionApi::exchange_refresh_token(String &r_error, bool &r_auth_invalid) {
-	String url = "https://cognito-idp." + region + ".amazonaws.com/";
-
+	// Standard OAuth2 refresh-token grant against Cognito's Hosted-UI token
+	// endpoint (what the official Diversion plugins use), form-url-encoded.
 	PackedStringArray headers;
-	headers.push_back("Content-Type: application/x-amz-json-1.1");
-	headers.push_back("X-Amz-Target: AWSCognitoIdentityProviderService.InitiateAuth");
+	headers.push_back("Content-Type: application/x-www-form-urlencoded");
+	String body = "grant_type=refresh_token&refresh_token=" + refresh_token.uri_encode() +
+			"&client_id=" + client_id.uri_encode();
 
-	Dictionary auth_params;
-	auth_params["REFRESH_TOKEN"] = refresh_token;
-	Dictionary payload;
-	payload["AuthFlow"] = "REFRESH_TOKEN_AUTH";
-	payload["ClientId"] = client_id;
-	payload["AuthParameters"] = auth_params;
-	String body = JSON::stringify(payload);
-
-	HttpResponse res = https_request(HTTPClient::METHOD_POST, url, headers, body);
+	HttpResponse res = https_request(HTTPClient::METHOD_POST, oauth_url, headers, body);
 	if (res.code < 0) {
 		r_error = "Could not reach Diversion authentication: " + res.error;
 		return false;
@@ -123,28 +118,79 @@ bool DiversionApi::exchange_refresh_token(String &r_error, bool &r_auth_invalid)
 	Dictionary obj = parsed;
 
 	if (res.code != 200) {
-		String type = obj.get("__type", "");
-		// NotAuthorized / InvalidGrant mean the refresh token is dead.
-		if (type.contains("NotAuthorized") || type.contains("InvalidParameter") || type.contains("UserNotFound")) {
+		String err = obj.get("error", "");
+		// invalid_grant means the stored login is dead; the user must re-login.
+		if (err == "invalid_grant" || res.code == 400) {
 			r_auth_invalid = true;
-			r_error = "Your Diversion API token was rejected. Generate a new one in the Diversion web app (Avatar -> Integrations) and re-enter it.";
+			r_error = "Diversion login expired or invalid. Run 'dv login' again to re-enable lock alerts.";
 		} else {
-			r_error = "Authentication failed (" + itos(res.code) + " " + type + ")";
+			r_error = "Authentication failed (" + itos(res.code) + " " + err + ")";
 		}
 		return false;
 	}
 
-	Dictionary result = obj.get("AuthenticationResult", Dictionary());
-	String token = result.get("AccessToken", "");
+	String token = obj.get("access_token", "");
 	if (token.is_empty()) {
 		r_error = "Authentication response had no access token.";
 		return false;
 	}
-	int expires_in = (int)result.get("ExpiresIn", 3600);
+	int expires_in = (int)obj.get("expires_in", 3600);
 
 	access_token = token;
 	// Refresh a minute early to avoid racing expiry mid-request.
 	access_expiry_unix = Time::get_singleton()->get_unix_time_from_system() + expires_in - 60;
+	return true;
+}
+
+bool DiversionApi::load_local_credentials(String &r_error) {
+	String home = OS::get_singleton()->get_environment("USERPROFILE");
+	if (home.is_empty()) {
+		home = OS::get_singleton()->get_environment("HOME");
+	}
+	String cred_dir = home.path_join(".diversion").path_join("credentials");
+	if (!DirAccess::dir_exists_absolute(cred_dir)) {
+		r_error = "Not logged in to Diversion (no credentials found). Run 'dv login'.";
+		return false;
+	}
+
+	// The folder holds one JSON file per logged-in user; pick the most
+	// recently modified, matching whichever account is active.
+	Ref<DirAccess> dir = DirAccess::open(cred_dir);
+	if (dir.is_null()) {
+		r_error = "Could not read Diversion credentials directory.";
+		return false;
+	}
+	String best_file;
+	int64_t best_mtime = -1;
+	dir->list_dir_begin();
+	for (String name = dir->get_next(); !name.is_empty(); name = dir->get_next()) {
+		if (dir->current_is_dir()) {
+			continue;
+		}
+		String full = cred_dir.path_join(name);
+		int64_t mtime = (int64_t)FileAccess::get_modified_time(full);
+		if (mtime > best_mtime) {
+			best_mtime = mtime;
+			best_file = full;
+		}
+	}
+	dir->list_dir_end();
+
+	if (best_file.is_empty()) {
+		r_error = "Not logged in to Diversion (no credentials found). Run 'dv login'.";
+		return false;
+	}
+
+	String contents = FileAccess::get_file_as_string(best_file);
+	Variant parsed = JSON::parse_string(contents);
+	Dictionary obj = parsed;
+	Dictionary token = obj.get("token", Dictionary());
+	String rt = token.get("refresh_token", "");
+	if (rt.is_empty()) {
+		r_error = "Diversion credentials had no refresh token. Run 'dv login' again.";
+		return false;
+	}
+	set_refresh_token(rt);
 	return true;
 }
 
