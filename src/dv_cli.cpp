@@ -92,6 +92,22 @@ DvStatusInfo parse_dv_status(const String &output) {
 				if (start >= 0 && end > start) {
 					info.workspace_id = stripped.substr(start + 1, end - start - 1);
 				}
+			} else if (stripped.begins_with("Sync in progress")) {
+				info.syncing = true;
+			} else if (stripped.begins_with("Outbound changes:") || stripped.begins_with("Inbound changes:")) {
+				// "Outbound changes:  3 / 7 (379B / 405.1kB)"
+				info.sync_direction = stripped.begins_with("Outbound") ? "Uploading" : "Downloading";
+				String rest = stripped.get_slice(":", 1);
+				int slash = rest.find("/");
+				if (slash >= 0) {
+					info.sync_done = rest.substr(0, slash).strip_edges().to_int();
+					String after = rest.substr(slash + 1).strip_edges();
+					info.sync_total = after.get_slice(" ", 0).to_int();
+					info.syncing = true;
+				}
+			} else if (stripped.begins_with("Currently syncing:")) {
+				info.syncing_file = stripped.get_slice(":", 1).strip_edges();
+				info.syncing = true;
 			} else if (stripped.ends_with(":")) {
 				String name = stripped.trim_suffix(":").to_lower();
 				in_section = true;

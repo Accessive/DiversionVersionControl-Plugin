@@ -21,8 +21,6 @@
 using namespace godot;
 using namespace diversion;
 
-static const std::chrono::seconds POLL_INTERVAL(30);
-
 void DiversionSoftLockPlugin::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("on_scene_changed", "scene_root"), &DiversionSoftLockPlugin::on_scene_changed);
 }
@@ -133,14 +131,33 @@ void DiversionSoftLockPlugin::refresh_ui() {
 	Vector<OtherEdit> snapshot;
 	String message;
 	bool ready;
+	bool is_syncing;
+	int done, total;
+	String direction;
 	{
 		std::lock_guard<std::mutex> lock(mutex);
 		snapshot = edits;
 		message = status_message;
 		ready = have_data;
+		is_syncing = syncing;
+		done = sync_done;
+		total = sync_total;
+		direction = sync_direction;
 	}
 
-	status_label->set_text(message);
+	// Live sync progress (commit/pull/push transfer) takes priority in the
+	// status line, since it's the feedback the user is waiting on.
+	if (is_syncing) {
+		String p = direction + " to Diversion";
+		if (total > 0) {
+			p += ": " + itos(done) + " / " + itos(total) + " files";
+		} else {
+			p += "...";
+		}
+		status_label->set_text(p);
+	} else {
+		status_label->set_text(message);
+	}
 	if (!ready) {
 		return;
 	}
@@ -248,6 +265,11 @@ void DiversionSoftLockPlugin::thread_loop() {
 	String project_path = project_root;
 	String repo_id, workspace_id;
 
+	// Fast tick for live sync progress; the cloud lock fetch runs less often.
+	const std::chrono::seconds TICK(2);
+	const int LOCK_EVERY = 15; // ~30s
+	int tick = 0;
+
 	while (true) {
 		{
 			std::unique_lock<std::mutex> lock(mutex);
@@ -256,14 +278,37 @@ void DiversionSoftLockPlugin::thread_loop() {
 			}
 		}
 
-		poll_once(api, project_path, repo_id, workspace_id);
+		poll_sync(project_path, repo_id, workspace_id);
+		if (tick == 0) {
+			poll_once(api, project_path, repo_id, workspace_id);
+		}
+		tick = (tick + 1) % LOCK_EVERY;
 
 		std::unique_lock<std::mutex> lock(mutex);
-		cv.wait_for(lock, POLL_INTERVAL, [this] { return exit_requested; });
+		cv.wait_for(lock, TICK, [this] { return exit_requested; });
 		if (exit_requested) {
 			return;
 		}
 	}
+}
+
+void DiversionSoftLockPlugin::poll_sync(const String &project_path, String &repo_id, String &workspace_id) {
+	SubprocessResult st = DvCli::run(project_path, dv_args({ "status", "--nowait", "--sync-only" }));
+	if (st.exit_code != 0) {
+		return;
+	}
+	DvStatusInfo info = parse_dv_status(st.output);
+	if (repo_id.is_empty()) {
+		repo_id = info.repo_id;
+	}
+	if (workspace_id.is_empty()) {
+		workspace_id = info.workspace_id;
+	}
+	std::lock_guard<std::mutex> lock(mutex);
+	syncing = info.syncing;
+	sync_done = info.sync_done;
+	sync_total = info.sync_total;
+	sync_direction = info.sync_direction.is_empty() ? String("Syncing") : info.sync_direction;
 }
 
 void DiversionSoftLockPlugin::poll_once(DiversionApi &api, String &project_path, String &repo_id, String &workspace_id) {

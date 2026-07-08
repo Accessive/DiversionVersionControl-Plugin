@@ -47,6 +47,14 @@ struct DvStatusInfo {
 	godot::String workspace_id; // dv.ws.<uuid>
 	godot::String head_commit_id; // dv.commit.<n>
 	godot::Vector<DvStatusEntry> entries;
+
+	// Live sync progress (the slow part of commit/pull/push -- the agent
+	// uploading/downloading files after the command returns).
+	bool syncing = false;
+	int sync_done = 0;
+	int sync_total = 0;
+	godot::String sync_direction; // "Uploading" / "Downloading"
+	godot::String syncing_file;
 };
 
 // Parses the human-readable output of `dv status --no-limit`.

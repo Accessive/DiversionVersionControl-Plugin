@@ -46,8 +46,15 @@ class DiversionSoftLockPlugin : public EditorPlugin {
 	String status_message;
 	bool have_data = false;
 
+	// Live file-sync progress (the slow tail of commit/pull/push).
+	bool syncing = false;
+	int sync_done = 0;
+	int sync_total = 0;
+	String sync_direction;
+
 	void thread_loop();
 	void poll_once(diversion::DiversionApi &api, String &project_path, String &repo_id, String &workspace_id);
+	void poll_sync(const String &project_path, String &repo_id, String &workspace_id);
 
 	void refresh_ui();
 	void on_scene_changed(Node *scene_root);
