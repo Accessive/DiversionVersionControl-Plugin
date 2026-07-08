@@ -224,10 +224,26 @@ void DiversionSoftLockPlugin::poll_once(DiversionApi &api, String &project_path,
 		}
 	}
 
-	Vector<OtherEdit> result;
+	Vector<OtherEdit> raw;
 	String err;
 	bool auth_invalid = false;
-	bool ok = api.fetch_other_statuses(repo_id, workspace_id, result, err, auth_invalid);
+	bool ok = api.fetch_other_statuses(repo_id, workspace_id, raw, err, auth_invalid);
+
+	// Drop noise the team never edits collaboratively: the plugin's own files
+	// (its binary lives in the repo and legitimately differs across branches)
+	// and Godot's transient "~"-prefixed hot-reload library copies. Without
+	// this the panel is dominated by the plugin reporting itself.
+	Vector<OtherEdit> result;
+	for (int i = 0; i < raw.size(); i++) {
+		const String &p = raw[i].path;
+		if (p.get_file().begins_with("~")) {
+			continue;
+		}
+		if (p.contains("addons/diversion/")) {
+			continue;
+		}
+		result.push_back(raw[i]);
+	}
 
 	std::lock_guard<std::mutex> lock(mutex);
 	if (!ok) {
