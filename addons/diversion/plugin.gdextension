@@ -1,0 +1,10 @@
+[configuration]
+
+entry_symbol = "diversion_plugin_init"
+compatibility_minimum = "4.5"
+
+[libraries]
+
+windows.editor.x86_64 = "res://addons/diversion/bin/libdiversion.windows.editor.x86_64.dll"
+linux.editor.x86_64 = "res://addons/diversion/bin/libdiversion.linux.editor.x86_64.so"
+macos.editor = "res://addons/diversion/bin/libdiversion.macos.editor.framework"
