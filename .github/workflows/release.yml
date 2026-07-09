@@ -68,8 +68,14 @@ jobs:
 
       - name: Zip release asset
         run: |
+          # The Godot Asset Library's uploader requires a LICENSE at the zip
+          # root (the addon still carries its own copy too). Ship README/icon
+          # alongside it and zip the whole package so the layout is:
+          #   LICENSE, README.md, icon.png, addons/diversion/...
+          cp LICENSE README.md package/
+          if [ -f icon.png ]; then cp icon.png package/; fi
           cd package
-          zip -r "../diversion-plugin-${{ github.ref_name }}.zip" addons
+          zip -r "../diversion-plugin-${{ github.ref_name }}.zip" .
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

@@ -164,6 +164,16 @@ TypedArray<Dictionary> DiversionVCSPlugin::_get_modified_files_data() {
 		if (display.is_empty()) {
 			continue;
 		}
+		// Never surface the plugin's own installed files. On Windows the live
+		// GDExtension module is a hot-reload copy under addons/diversion/bin/;
+		// if "Discard All" swept it, `dv reset --clean` would delete the module
+		// out from under the running editor and close it instantly. The binary
+		// is .dvignore'd, but the manifest is tracked and reverting it live can
+		// also trigger a crashy extension reload -- so hide the whole dir. The
+		// soft-lock panel filters these paths for the same reason.
+		if (display.begins_with("addons/diversion/")) {
+			continue;
+		}
 		if (entry.change == DvChange::RENAMED) {
 			int arrow = entry.path.find(" -> ");
 			String old_display = from_dv_path(entry.path.substr(0, arrow).strip_edges());
@@ -238,10 +248,24 @@ void DiversionVCSPlugin::_unstage_file(const String &p_file_path) {
 }
 
 void DiversionVCSPlugin::_discard_file(const String &p_file_path) {
-	// --clean also deletes files that were newly added, matching the dock's
-	// expectation that discarding a new file removes it.
-	String dv_path = to_dv_path(dv_path_of(p_file_path));
-	SubprocessResult res = DvCli::run(project_path, dv_args({ "reset", dv_path, "-f", "--clean" }));
+	String display = dv_path_of(p_file_path);
+	// Defense in depth: never touch the plugin's own installed files. The live
+	// module is a hot-reload copy under addons/diversion/bin/, and deleting or
+	// reverting it unloads the running extension and closes the editor. These
+	// are already excluded from _get_modified_files_data, so we should never be
+	// asked to discard one -- but "Discard All" iterates whatever the dock
+	// thinks is dirty, so we refuse here too.
+	if (display.trim_prefix("res://").begins_with("addons/diversion/")) {
+		return;
+	}
+
+	String dv_path = to_dv_path(display);
+	// Revert the file's content only -- never `--clean`, which deletes. The
+	// dock removes newly-added files itself without calling us (see
+	// _get_modified_files_data), so everything reaching here is a tracked
+	// change we simply restore. Passing --clean risked deleting files adjacent
+	// to the target and was the classic source of "Discard closed the editor".
+	SubprocessResult res = DvCli::run(project_path, dv_args({ "reset", dv_path, "-f" }));
 	if (res.exit_code != 0) {
 		popup_error(String("Could not discard '") + p_file_path + "'.\n\ndv said:\n" + res.output.strip_edges());
 		return;
